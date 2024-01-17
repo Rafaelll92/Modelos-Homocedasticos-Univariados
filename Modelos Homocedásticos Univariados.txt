@@ -1,5 +1,13 @@
 #Imports
-
+########################/                     \#################################    
+#                                                                              #
+#                                                                              #
+#     *Rentabilidade passada não conresponde a rentabilidades fututuras        #
+#     *As estimações nesse trabalho podem diferir bastante com a realidade     #
+#     *Para propósitos educacionais, apenas                                    #
+#                                                                              #
+#                                                                              #
+########################/                     \#################################
 
 from datetime import datetime
 import torch
