@@ -1,0 +1,827 @@
+#Imports
+
+
+from datetime import datetime
+import torch
+import math
+import numbers
+import time
+import sklearn
+from functools import reduce
+import seaborn as sns
+import numpy as np
+from numpy import cumsum, log, polyfit, sqrt, std, subtract
+from numpy.random import randn
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+from torch.optim.optimizer import Optimizer, required
+import copy
+from sklearn.metrics import mean_absolute_error
+from sklearn import preprocessing
+from scipy.stats import ks_2samp
+import os
+import sys
+from scipy import signal
+from scipy.optimize import minimize
+import psutil
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from tabulate import tabulate
+from statsmodels.tsa.stattools import adfuller
+from scipy import stats
+from scipy.stats import kstest
+from statsmodels.stats.diagnostic  import lilliefors
+from scipy.stats import shapiro
+from scipy.stats import normaltest
+from torch.nn.modules.utils import _pair
+import datetime
+import pandas as pd 
+from sklearn.metrics import mean_squared_error
+from sklearn.metrics import r2_score
+from sklearn.metrics import mean_absolute_error
+from torchviz import make_dot
+from sklearn.linear_model import LinearRegression
+from torch.optim.optimizer import Optimizer, required
+import copy
+from scipy.stats import norm
+import sys
+from torch.nn.modules.utils import _pair
+import librosa
+import librosa.display
+from distfit import distfit
+from statsmodels.tsa.stattools import adfuller, kpss
+
+VALE3_SA = pd.read_csv(r"C:\Users\Rafael Xavier Botelho\Downloads\VALE3.SA.csv", parse_dates=['Date'])
+VALE3_SA.index = VALE3_SA["Date"]
+VALE3_SA_Close = VALE3_SA.loc[:,[ 'Close']]
+VALE3_SA_Volume = VALE3_SA.loc[:,[ 'Volume']]
+start_date = pd.to_datetime(min(VALE3_SA.index))
+end_date = pd.to_datetime(max(VALE3_SA.index))                   
+VALE3_SA["Date"] = pd.to_datetime(VALE3_SA.index) 
+new_df = (VALE3_SA['Date']>= start_date) & (VALE3_SA['Date']<= end_date)
+df1 = VALE3_SA.loc[new_df]
+stock_data = df1.set_index('Date')
+top_plt = plt.subplot2grid((5,4), (0, 0), rowspan=3, colspan=4)
+top_plt.plot(stock_data.index, stock_data["Close"])
+plt.title('Dados Históricos Petrobras Ações Ordinárias - VALE3_SA 2018-01-15 00:00:00 até 2024-01-12 00:00:00')
+bottom_plt = plt.subplot2grid((5,4), (3,0), rowspan=1, colspan=4)
+bottom_plt.bar(stock_data.index, stock_data['Volume'])
+plt.title('VALE3_SA . Volume', y=-0.60)
+plt.gcf().set_size_inches(1,8)
+plt.show()
+
+#Preços_de_fechamentos_VALE3_SA.Figura_1_2.png
+
+######################/                                                       \##############################
+#   Muitos indicadores macroeconômicos estão atrelados ao crescimento populacional, que é exponencial,
+#   e, portanto, têm uma tendência exponencial. Portanto, o processo antes da modelagem com
+#   métodos Lineares geralmente é:
+#
+#   Cole, T. J., & Altman, D. G. (2017). 
+#   Statistics Notes: Percentage differences, symmetry, and natural logarithms. BMJ, 358(August), j3683. 
+#   https://doi.org/20.1136/bmj.j3683
+#
+#
+#   *   Obter logaritímicos para obter uma série com uma tendência Linear
+#   *   Obter a diferença para obter uma série estacionária 
+#
+######################/                                                       \##############################
+
+
+##################################################################################################
+#      Diferenciação fracionária para remover a tendência Linear enquanto preserva  memória 
+#                    - Tentar obter periodograma com autocoreelação com decaímento senoidal-
+#
+#      [DE PRADO, 2017]  M.L de Prado (2017) Advances in Financial Machine Learning.
+#      1st, Edition. Wiley, 2017.
+#
+##################################################################################################
+
+
+def getWeights(d,lags):
+     # return the weights from the series expansion of the differencing operator
+     # for real orders d and up to lags coefficients
+     w=[1]
+     for k in range(1,lags):
+         w.append(-w[-1]*((d-k+1))/k)
+     w=np.array(w).reshape(-1,1)
+     return w
+	 
+
+def plotWeights(dRange, lags, numberPlots):
+     weights=pd.DataFrame(np.zeros((lags, numberPlots)))
+     interval=np.linspace(dRange[0],dRange[1],numberPlots)
+     for i, diff_order in enumerate(interval):
+         weights[i]=getWeights(diff_order,lags)
+     weights.columns = [round(x,2) for x in interval]
+     fig=weights.plot(figsize=(15,6))
+     plt.legend(title='Order of differencing')
+     plt.title('Lag coefficients for various orders of differencing')
+     plt.xlabel('lag coefficients')
+     plt.grid(False)
+     plt.show()
+	 
+
+def cutoff_find(order,cutoff,start_lags): #order is our dearest d, cutoff is 1e-5 for us, and start lags is an initial amount of lags in which the loop will start, this can be set to high values in order to speed up the function
+     val=np.inf
+     lags=start_lags
+     while abs(val)>cutoff:
+         w=getWeights(order, lags)
+         val=w[len(w)-1]
+         lags+=1
+     return lags
+	 
+
+def ts_differencing_tau(series, order, tau):
+     # return the time series resulting from (fractional) differencing
+     lag_cutoff=(cutoff_find(order,tau,1)) #finding lag cutoff with tau
+     weights=getWeights(order, lag_cutoff)
+     res=0
+     for k in range(lag_cutoff):
+         res += weights[k]*series.shift(k).fillna(0)
+     return res[lag_cutoff:]
+
+
+###########################################################################################
+# Séries mariores podem permitir um limite menor para preservar memória no periodograma.  #
+# De maneira geral, quanto maior o limite de diferenciação "d", mais curta a série fica.  #
+# No caso o limite, aqui denominado de "tau, foi de 1e-2                                  #
+###########################################################################################
+
+possible_d=np.divide(range(1,200),200)
+tau=1e-2
+log_adf_stat_holder=[None]*len(possible_d)
+
+for i in range(len(possible_d)):
+    log_adf_stat_holder[i]=adfuller(ts_differencing_tau(np.log(pd.DataFrame(VALE3_SA_Close)) ,possible_d[i],tau))[1]
+
+#Plotando o auto-correlograma para as defasagens "d" 
+
+plt.plot(possible_d,log_adf_stat_holder)
+plt.axhline(y=0.000000000001,color='r')
+plt.ylabel('P-valor para teste ADF por ordem de diferenciação na série logarítmica de fechamento VALE3_SA 1 Dia')
+plt.show()
+
+#Figure_2.png
+
+d=1.00
+VALE3_SA_Close_fractional_difference  = (ts_differencing_tau(np.log(VALE3_SA_Close), d,tau )) 
+VALE3_SA_Close_fractional_difference = VALE3_SA_Close_fractional_difference.fillna(method='ffill')  
+pd.DataFrame(VALE3_SA_Close_fractional_difference).to_csv(r'C:\Users\Rafael Xavier Botelho\Documents\VALE3_SA_Close_fractional_difference.csv', index=None)
+VALE3_SA_Close_fractional_difference = pd.read_csv("C:/Users/Rafael Xavier Botelho/Documents/VALE3_SA_Close_fractional_difference.csv")
+
+VALE3_SA_Close_fractional_difference_train  =  VALE3_SA_Close_fractional_difference[:-30]
+VALE3_SA_Close_fractional_difference_test   =  VALE3_SA_Close_fractional_difference[-30:]
+
+def nan_helper(y):
+   """
+      Função para limpar valores com NaNs.
+   Inpute:
+      - y, vetor em 1d  com possivéis NaNs 
+   Output:
+      - NaNs.Valores com NaNs.
+      - Função com índices = index(NaNs), 
+	    para converter índicies de NaNs para valores interpolados
+   Exemplo:
+      # interpolação linaer de  NaNs
+      nans, x= nan_helper(y)
+      y[nans]= np.interp(x(nans), x(~nans), y[~nans])
+   """
+   return np.isnan(y), lambda z: z.nonzero()[0]
+
+nans, x= nan_helper(VALE3_SA_Close_fractional_difference_train .values)
+VALE3_SA_Close_fractional_difference_train .values[nans]= np.interp(x(nans), x(~nans), VALE3_SA_Close_fractional_difference_train.values[~nans])
+check_nan_in_df = VALE3_SA_Close_fractional_difference_train.isnull().values.any()
+print (check_nan_in_df)
+#False
+
+########################
+#                      #
+#    Testes de         #
+#         Normalidade  #
+#                      # 
+########################
+
+t1 = stats.kstest(VALE3_SA_Close_fractional_difference_train, 'norm') # KS
+t2 = lilliefors(VALE3_SA_Close_fractional_difference_train, dist='norm', pvalmethod='approx') # Lilliefors
+t3 = stats.shapiro(VALE3_SA_Close_fractional_difference_train) # Shapiro-Wilk
+t4 = normaltest(VALE3_SA_Close_fractional_difference_train) # Shapiro-Francia
+
+
+pd.set_option('display.width', 1000)
+pd.set_option('colheader_justify', 'center')
+
+columns=['kstest', 'lilliefors', 'Shapiro-Wilk', 'Shapiro-Francia'] 
+lines=['statistics', ' p-values']
+
+df = pd.DataFrame({'kstest': t1,'lilliefors': t2,'Shapiro-Wilk': t3,'Shapiro-Francia': t4,},lines, columns)
+
+            kstest    lilliefors   Shapiro-Wilk      Shapiro-Francia
+statistics  0.61096  6.365134e-02  8.973903e-01       [450.4718055340296]
+ p-values   0.00000  4.425515e-15  4.312469e-30  [1.5180647705378637e-98]
+
+# ADF Test
+result = adfuller(VALE3_SA_Close_fractional_difference_train.values, autolag='AIC')
+print(f'ADF Statistic: {result[0]}')
+#ADF Statistic: -13.371108009710214
+
+print(f'p-value: {result[1]}')
+p-value: 5.195780311747808e-25
+#p-value:  0.0 < 0.05 ( Reject the null hypotesis that seris is  non-statioNarxy )
+
+for key, value in result[4].items():
+    print('Critial Values:')
+    print(f'   {key}, {value}')
+
+Critial Values:
+   1%, -3.4348835326305642
+Critial Values:
+   5%, -2.863542248636555
+Critial Values:
+   10%, -2.5678359819686065
+
+# KPSS Test
+result = kpss(VALE3_SA_Close_fractional_difference_train.values, regression='c')
+print('\nKPSS Statistic: %f' % result[0])
+KPSS Statistic: 0.093390
+KPSS Statistic:   0.060768 > 0.05 ( Rejeitar a hipotese nula que a série não é estacionária)
+
+print('p-value: %f' % result[1])
+# p-value: 0.100000
+
+for key, value in result[3].items():
+    print('Critial Values:')
+    print(f'   {key}, {value}')
+		
+Critial Values:
+   10%, 0.347
+Critial Values:
+   5%, 0.463
+Critial Values:
+   2.5%, 0.574
+Critial Values:
+   1%, 0.739
+   
+   
+#############################/                                               \##################################
+#                                                      
+#           Espectograma   
+#
+#    Wolf,Peter 2.5: Noise Modeling - White, Pink, and Brown Noise, Pops and Crackles
+#
+#   https://eng.libretexts.org/Bookshelves/
+#	Industrial_and_Systems_Engineering/Chemical_Process_Dynamics_and_Controls_(Woolf)
+#	/02%3A_Modeling_Basics/
+#	2.05%3A_Noise_modeling-
+#    _more_detailed_information_on_noise_modeling-_white%2C_pink%2C_and_brown_noise%2C_pops_and_crackles                            
+#                                                      
+#############################/                                                \#################################
+
+# Obtendo a taxa de amostragem através das duas primeiras observaçõs dos log retornos da série para a amostragem de treino
+inter_sample_time = VALE3_SA_Close_fractional_difference_train.values[1] - VALE3_SA_Close_fractional_difference_train.values[0]
+print('inter_sample_time =', inter_sample_time, 'd')
+#inter_sample_time = [-0.00584475] d
+
+# Checar se tem o mesmo tamanho 
+print('Mesmo tamanho?:', np.allclose(VALE3_SA_Close_fractional_difference_train, inter_sample_time))
+#Mesmo tamanho?: False.Não é um Ruído Branco Uniforme (Infinito) 
+
+print('n_samples =', len(VALE3_SA_Close_fractional_difference_train))
+#n_samples = 1453
+n_samples = len(VALE3_SA_Close_fractional_difference_train)
+sampling_freq =  1 / inter_sample_time
+
+# Obtendo as frequências do espectograma
+f = np.fft.fftfreq(len(VALE3_SA_Close_fractional_difference_train)) * sampling_freq
+
+# Obtendo a desnidade do espectograma
+psd = np.abs(np.fft.fft(VALE3_SA_Close_fractional_difference_train.values))**2 / len(VALE3_SA_Close_fractional_difference_train)
+
+# Gráfico
+plt.plot(f[f>=0], psd[f>=0])
+plt.xlabel('freq (Hz)')
+plt.ylabel('PSD')
+plt.margins(0.02)
+plt.show()
+
+#Espectogram_Figura_1_2.png
+
+frequency = np.log(abs(f.flatten()))
+frequency[np.isneginf(frequency)] = np.mean(frequency)
+frequency = pd.DataFrame(frequency)
+frequency = frequency.replace([np.inf, -np.inf], 0).fillna(0)
+psd = np.log(abs(psd.flatten())).reshape(-1, 1)
+psd[np.isneginf(psd)] = np.mean(psd)
+psd = pd.DataFrame(psd)
+psd = psd.replace([np.inf, -np.inf], 0).fillna(0)
+reg = LinearRegression().fit(frequency,psd)
+reg.coef_
+array([[0.09575237]])
+Algo entre um ruído branco e rosa, mas muito perto que a amostragem dos retornos de  treino de VALE3.SA é um ruído branco.
+
+#Parte 2 Modelagem
+
+#######/                                    \#######
+#                                                  #                           
+#   Processo de Difusão de Energia com Saltos      #
+#        Movimento Fracionado                      #
+#                   Browniano Geométrico           #
+#                                                  #                         
+#######/                                    \#######
+
+
+
+VALE3_SA_Close_fractional_difference_train  =  VALE3_SA_Close_fractional_difference[:-30]
+VALE3_SA_Close_fractional_difference_test   =  VALE3_SA_Close_fractional_difference[-30:]
+
+
+#########*/                                            *\###########
+#
+#    Modelo de aprendizado não-supervisinado.SDE
+#          Difusão de Calor(Energia).Movimento Geométrico
+#                                             Fracionado  Browniano
+#
+#########*/                                            *\########### 
+
+lags = range(1,100)
+
+def hurst(p, l):
+    """
+    Arguments:
+        p: ndarray -- the price series to be tested
+        l: list of integers or an integer -- lag(s) to test for mean reversion
+    Returns:
+        Hurst exponent
+    """
+    if isinstance(l, int):
+        lags = [1, l]
+    else:
+        lags = l
+    assert lags[-1] >=2, "Lag in prices must be greater or equal 2"
+    print(f"Price lags of {lags[1:]} are included")
+    lp = np.log(p)
+    var = [np.var(lp[l:] - lp[:-l]) for l in lags]
+    hr = stats.linregress(np.log(lags), np.log(var))[0] / 2
+    return hr
+	
+H=hurst(VALE3_SA_Close[:-30].fillna(method='ffill').values.ravel(),lags)
+
+def cholesky_fbm(T, N, H):
+    '''
+	# -*- coding: utf-8 -*-
+   	https://github.com/732jhy/Fractional-Brownian-Motion/
+
+    Created on Fri Jul  3 15:26:14 2020
+
+    @author: Justin Yu, M.S. Financial Engineering, Stevens Institute of Technology
+
+    Implementation of Fractional Brownian Motion, Davies Harte Method
+    """
+    Generates sample paths of fractional Brownian Motion using the Davies Harte method
+    
+    args:
+        T:      length of time (in years)
+        N:      number of time steps within timeframe
+        H:      Hurst parameter
+    '''
+    gamma = lambda k,H: 0.5*(np.abs(k-1)**(2*H) - 2*np.abs(k)**(2*H) + np.abs(k+1)**(2*H))     
+    L = np.zeros((N,N))
+    X = np.zeros(N)
+    V = np.random.standard_normal(size=N)
+    L[0,0] = 1.0
+    X[0] = V[0]   
+    L[1,0] = gamma(1,H)
+    L[1,1] = np.sqrt(1 - (L[1,0]**2))
+    X[1] = np.sum(L[1,0:2] @ V[0:2])    
+    for i in range(2,N):
+        L[i,0] = gamma(i,H)        
+        for j in range(1, i):         
+            L[i,j] = (1/L[j,j])*(gamma(i-j,H) - (L[i,0:j] @ L[j,0:j]))
+        L[i,i] = np.sqrt(1 - np.sum((L[i,0:i]**2))) 
+        X[i] = L[i,0:i+1] @ V[0:i+1]
+    fBm = np.cumsum(X)*(N**(-H))
+    return (T**H)*(fBm)
+	
+	
+def merton_jump_paths(S, T, mu, sigma,  lam, m, v, H, steps, Npaths):
+    size=(steps,Npaths)
+    dt = 1/T 
+    poi_rv = np.multiply(np.random.poisson( lam*dt, size=size),
+                         np.random.normal(m,v, size=size)).cumsum(axis=0)
+    geo = np.array([((mu -  sigma**2/2 -lam*(m  + v**2*0.5))*dt +\
+                              sigma*np.sqrt(dt) * \
+                              cholesky_fbm(T,steps,H))for i in range(Npaths)])							  
+    return (np.exp(geo.reshape(T,Npaths).cumsum(axis=1)+poi_rv)*S) ### geometric fractional brownian motion with Jumps Diffusion ###
+	
+
+x = [np.random.uniform(0.0,1.0),np.random.uniform(0.0,1.0),np.random.uniform(0.0,1.0)] # (lambda, m, v)
+
+
+def obj_params(x,S, T,mu, sigma, H, steps, Npaths, y_obs):
+    y_hat=merton_jump_paths(S,  T, mu, sigma,   x[0], x[1], x[2], H, steps, Npaths)
+    return np.linalg.norm(pd.DataFrame(y_obs) - pd.DataFrame(np.mean(y_hat,1)), 2)
+
+bounds = ((0.0, 1.0),  #lambda   intensity of jump i.e. number of jumps per annum
+          (0.0, 1.0),  #m  meean of jump size
+		  (0.0, 1.0))  #v  standard deviation of jump
+		  
+
+res = minimize(obj_params, method='SLSQP',
+               x0=x,
+               args=(VALE3_SA_Close[:-30].values.ravel()[0], len(VALE3_SA_Close[:-30].values.ravel()),np.mean(VALE3_SA_Close_fractional_difference_train).values.ravel() , np.std(VALE3_SA_Close_fractional_difference_train).values.ravel(),H,len(VALE3_SA_Close[:-30].values.ravel()),1,VALE3_SA_Close[:-30].values.ravel()),
+               bounds = bounds, tol=1e-5,
+               options={"maxiter":1})
+
+print('Calibrated Jump intensity-lam : %f' % res.x[0])
+Calibrated Jump intensity-lam :  0.994541
+
+print('Calibrated Jump Mean (cf-m): %f' % res.x[1])
+Calibrated Jump Mean (cf-m):  0.049867
+
+print('Calibrated Jump Std-v : %f' % res.x[2])
+Calibrated Jump Std-v  : 0.603316
+
+y_hat_all = merton_jump_paths(VALE3_SA_Close[:-30].values.ravel()[0], len(VALE3_SA_Close[:-30])+len(VALE3_SA_Close[-30:]),  np.mean(VALE3_SA_Close_fractional_difference_train).values.ravel() , np.std(VALE3_SA_Close_fractional_difference_train).values.ravel() , res.x[0] , res.x[1] , res.x[2] , H,  len(VALE3_SA_Close[:-30])+len(VALE3_SA_Close[-30:]),1)
+yhat = np.mean(y_hat_all,1)	
+
+pd.DataFrame(pd.DataFrame(np.array(y_hat_all)).squeeze(1)).to_csv (r'C:\Users\Rafael Xavier Botelho\Documents\Desktop\Trabalho-Github\VALE3_SA_Close_forecasted_non_Linear0_all.csv', index=None)
+pd.DataFrame(pd.DataFrame(np.array(yhat))).to_csv (r'C:\Users\Rafael Xavier Botelho\Documents\Desktop\Trabalho-Github\VALE3_SA_Close_forecasted_non_Linear0.csv', index=None)
+
+VALE3_SA_Close_forecasted_nonLinear_all0 = pd.read_csv("C:/Users/Rafael Xavier Botelho/Documents/Desktop/Trabalho-Github/VALE3_SA_Close_forecasted_non_Linear0_all.csv")
+VALE3_SA_Close_forecasted_nonLinear0 = pd.read_csv("C:/Users/Rafael Xavier Botelho/Documents/Desktop/Trabalho-Github/VALE3_SA_Close_forecasted_non_Linear0.csv")
+
+#######################
+#   In Sample KPI     # 
+#                     #
+#######################                                                                                                                                                            
+
+MSE = mean_squared_error(VALE3_SA_Close_forecasted_nonLinear0[:-len(VALE3_SA_Close_fractional_difference_test)].values.ravel(), VALE3_SA_Close[:-len(VALE3_SA_Close_fractional_difference_test)].values.ravel())
+ 
+RMSE = math.sqrt(MSE)
+print('RMSE: %f' % RMSE)
+RMSE: 30.731450
+
+mae = mean_absolute_error(VALE3_SA_Close_forecasted_nonLinear0[:-len(VALE3_SA_Close_fractional_difference_test)].values.ravel(), VALE3_SA_Close[:-len(VALE3_SA_Close_fractional_difference_test)].values.ravel())
+print('MAE: %f' % mae)
+MAE:  23.909954
+
+coefficient_of_dermination = r2_score(VALE3_SA_Close[:-len(VALE3_SA_Close_fractional_difference_test)].values.ravel(), VALE3_SA_Close_forecasted_nonLinear0[:-len(VALE3_SA_Close_fractional_difference_test)].values.ravel())
+print('R2: %f' % coefficient_of_dermination)
+R2: -1.421284 #Pobre peformace  para a amostragem de treino 
+
+Kolmogorov_Smirnoff_Adherence_One_Dimensional_Sampling_Test = ks_2samp(VALE3_SA_Close[:-len(VALE3_SA_Close_fractional_difference_test)].values.ravel() , VALE3_SA_Close_forecasted_nonLinear0[:-len(VALE3_SA_Close_fractional_difference_test)].values.ravel())
+print('statistic: %f   ,pvalue: %f' % (Kolmogorov_Smirnoff_Adherence_One_Dimensional_Sampling_Test[0],Kolmogorov_Smirnoff_Adherence_One_Dimensional_Sampling_Test[1]))
+statistic: 0.923816   ,pvalue: 0.000000
+# Nenhuma Comrrespôndencia a 1% , 3% nem a 5% de confiança
+
+
+t = VALE3_SA[:-30].index
+fig, ax1 = plt.subplots()
+color = 'tab:red'
+ax1.set_xlabel('datas (s)')
+ax1.set_ylabel('Amostra estimada de treino  para o Modelo de Merton', color=color)
+ax1.plot(t,VALE3_SA_Close_forecasted_nonLinear0[:-30].values.ravel() , color=color)
+ax1.tick_params(axis='y', labelcolor=color)
+
+ax2 = ax1.twinx()  # Colocando um segundo eixo juntamente com o mesmo tammaho do eixo X 
+
+color = 'tab:blue'
+ax2.set_ylabel('Amostra observada de treino para os Preços de Fechamentos ', color=color)  
+ax2.plot(t, VALE3_SA_Close[:-30].values.ravel(), color=color)
+ax2.tick_params(axis='y', labelcolor=color)
+fig.tight_layout() 
+plt.show()
+
+#Figure_1_Preço_de_Fecamento_para_a_amostragem_de_treino_Obs_vs_Estimado.png
+
+sns.distplot(VALE3_SA_Close[:-30].values.ravel(),bins=100,color='red',  label = "Amostra observada ground truth")  
+sns.distplot(VALE3_SA_Close_forecasted_nonLinear0[:-30].values.ravel(),bins=100,color='blue', label = "Amostra estimada")
+plt.suptitle('Histograma para amostras estimadas  e sua respectiva  realidade observada de treino respectivamente ' ,fontsize=12, color='black')
+plt.grid(True)
+plt.legend(loc = "upper left")
+plt.plot(0.0, 1.0)
+plt.show()
+
+#Figure_1b_histograma_da_Figura_1.png
+
+####################################
+#  Out of Sample                   #
+#        Peformace preditiva KPI   #
+#                                  #
+####################################
+
+                                                
+MSE = mean_squared_error(VALE3_SA_Close_forecasted_nonLinear0[-len(VALE3_SA_Close_fractional_difference_test):].values.ravel(), VALE3_SA_Close[-len(VALE3_SA_Close_fractional_difference_test):].values.ravel())
+RMSE = math.sqrt(MSE)
+print('RMSE: %f'%  RMSE)
+RMSE: 30.123636
+
+mae = mean_absolute_error(VALE3_SA_Close_forecasted_nonLinear0[-len(VALE3_SA_Close_fractional_difference_test):].values.ravel(), VALE3_SA_Close[-len(VALE3_SA_Close_fractional_difference_test):].values.ravel())
+print('MAE: %f' % mae)
+MAE: 30.077383
+
+coefficient_of_dermination = r2_score(VALE3_SA_Close[-len(VALE3_SA_Close_fractional_difference_test):].values.ravel() , VALE3_SA_Close_forecasted_nonLinear0[-len(VALE3_SA_Close_fractional_difference_test):].values.ravel())
+print('R2: %f' % coefficient_of_dermination)
+R2: -319.363499  # Pobre peformace para a amostragem de teste
+
+Kolmogorov_Smirnoff_Adherence_One_Dimensional_Sampling_Test = ks_2samp(VALE3_SA_Close[-len(VALE3_SA_Close_fractional_difference_test):].values.ravel(),VALE3_SA_Close_forecasted_nonLinear0[-len(VALE3_SA_Close_fractional_difference_test):].values.ravel())
+print('statistic: %f   ,pvalue: %f' % (Kolmogorov_Smirnoff_Adherence_One_Dimensional_Sampling_Test[0],Kolmogorov_Smirnoff_Adherence_One_Dimensional_Sampling_Test[1]))
+statistic: 1.000000   ,pvalue: 0.000000
+# Nenhuma Comrrespôndencia a 1% ,3% e 5%  de confiança.
+
+
+t = VALE3_SA[-30:].index
+fig, ax1 = plt.subplots()
+color = 'tab:red'
+ax1.set_xlabel('datas (s)')
+ax1.set_ylabel('Amostra estimada de teste  para o Modelo de Merton', color=color)
+ax1.plot(t,VALE3_SA_Close_forecasted_nonLinear0[-30:].values.ravel() , color=color)
+ax1.tick_params(axis='y', labelcolor=color)
+
+ax2 = ax1.twinx()  # Colocando um segundo eixo juntamente com o mesmo tammaho do eixo X 
+
+color = 'tab:blue'
+ax2.set_ylabel('Amostra observada de teste para os Preços de Fechamentos ', color=color)  
+ax2.plot(t, VALE3_SA_Close[-30:].values.ravel(), color=color)
+ax2.tick_params(axis='y', labelcolor=color)
+fig.tight_layout() 
+plt.show()
+
+#Figure_1.1_Preço_de_Fecamento_para_a_amostragem_de_teste_Obs_vs_Estimado.png
+	
+
+sns.distplot(VALE3_SA_Close[-30:].values.ravel(),bins=100,color='red',  label = "Amostra de teste observado ground truth")  
+sns.distplot(VALE3_SA_Close_forecasted_nonLinear0[-30:].values.ravel(),bins=100,color='blue', label = "Amostra de teste prevista forecasted")
+plt.suptitle('Histograma para amostras estimadas de teste e sua respectiva  realidade observada ' ,fontsize=12, color='black')
+plt.grid(True)
+plt.legend(loc = "upper left")
+plt.plot(0.0, 1.0)
+plt.show()
+
+#Figure_1b_histograma_da_Figura_1.png
+
+# Instanciar o objeto, a função,  distfit  
+dist = distfit()
+
+# Determinar a melhor distribuição de probabilidade adequada para os dados
+dist.fit_transform(VALE3_SA_Close[-len(VALE3_SA_Close_fractional_difference_test):].values)
+
+# Imprimir o sumário das distribuições elencadas 
+print(dist.summary)
+
+       name      score       loc      ... bootstrap_score bootstrap_pass  color
+0        gamma  0.033729   71.333841  ...         0            None       #e41a1c
+1      lognorm  0.035329   70.423389  ...         0            None       #e41a1c
+2      uniform  0.036805   71.690002  ...         0            None       #377eb8
+3   genextreme  0.038807   73.476165  ...         0            None       #4daf4a
+4         beta  0.043719   71.690002  ...         0            None       #984ea3
+5        expon  0.055206   71.690002  ...         0            None       #ff7f00
+6       pareto  0.057187     0.14303  ...         0            None       #ffff33
+7            t  0.062651   74.297468  ...         0            None       #a65628
+8         norm  0.062651   74.297667  ...         0            None       #f781bf
+9     loggamma  0.063075 -348.712532  ...         0            None       #999999
+10    dweibull  0.068991   74.082619  ...         0            None       #999999
+
+# Plot resultados
+dist.plot()
+plt.show()
+
+#Figure_2.1_pdf_treino.png
+
+# Determinar a melhor distribuição de probabilidade adequada para os dados
+dist.fit_transform(VALE3_SA_Close_forecasted_nonLinear0[-len(VALE3_SA_Close_fractional_difference_test):].values)
+
+# Imprimir o sumário das distribuições elencadas 
+print(dist.summary)
+
+       name       score       loc      ... bootstrap_score bootstrap_pass  color
+0            t   11.588098  44.221912  ...         0            None       #e41a1c
+1         norm   13.449981  44.220284  ...         0            None       #e41a1c
+2      lognorm    13.79461  41.290853  ...         0            None       #377eb8
+3     loggamma    13.93422  44.198294  ...         0            None       #4daf4a
+4   genextreme   14.959064  44.211506  ...         0            None       #984ea3
+5        gamma   15.203636  43.510854  ...         0            None       #ff7f00
+6     dweibull    18.26184  44.218821  ...         0            None       #ffff33
+7         beta   18.430002   44.05055  ...         0            None       #a65628
+8      uniform   85.979589  44.116562  ...         0            None       #f781bf
+9        expon  191.294213  44.116562  ...         0            None       #999999
+10      pareto  191.535206   0.110399  ...         0            None       #999999
+
+# Plot resultados
+dist.plot()
+plt.show()
+
+#Figure_2.2_pdf_teste.png
+
+# Determinar a melhor distribuição de probabilidade adequada para os dados
+dist.fit_transform(VALE3_SA_Close[-len(VALE3_SA_Close_fractional_difference_test):].values)
+
+# Imprimir o sumário das distribuições elencadas 
+print(dist.summary)
+
+       name      score       loc      ... bootstrap_score bootstrap_pass  color
+0        gamma  0.033729   71.333841  ...         0            None       #e41a1c
+1      lognorm  0.035329   70.423389  ...         0            None       #e41a1c
+2      uniform  0.036805   71.690002  ...         0            None       #377eb8
+3   genextreme  0.038807   73.476165  ...         0            None       #4daf4a
+4         beta  0.043719   71.690002  ...         0            None       #984ea3
+5        expon  0.055206   71.690002  ...         0            None       #ff7f00
+6       pareto  0.057187     0.14303  ...         0            None       #ffff33
+7            t  0.062651   74.297468  ...         0            None       #a65628
+8         norm  0.062651   74.297667  ...         0            None       #f781bf
+9     loggamma  0.063075 -348.712532  ...         0            None       #999999
+10    dweibull  0.068991   74.082619  ...         0            None       #999999
+
+
+# Plot resultados
+dist.plot()
+plt.show()
+
+#Figure_2.1_pdf_treino_obs.png
+
+# Determinar a melhor distribuição de probabilidade adequada para os dados
+dist.fit_transform(VALE3_SA_Close_forecasted_nonLinear0[-len(VALE3_SA_Close_fractional_difference_test):].values)
+
+# Imprimir o sumário das distribuições elencadas 
+print(dist.summary)
+
+       name       score       loc      ... bootstrap_score bootstrap_pass  color
+0            t   11.588098  44.221912  ...         0            None       #e41a1c
+1         norm   13.449981  44.220284  ...         0            None       #e41a1c
+2      lognorm    13.79461  41.290853  ...         0            None       #377eb8
+3     loggamma    13.93422  44.198294  ...         0            None       #4daf4a
+4   genextreme   14.959064  44.211506  ...         0            None       #984ea3
+5        gamma   15.203636  43.510854  ...         0            None       #ff7f00
+6     dweibull    18.26184  44.218821  ...         0            None       #ffff33
+7         beta   18.430002   44.05055  ...         0            None       #a65628
+8      uniform   85.979589  44.116562  ...         0            None       #f781bf
+9        expon  191.294213  44.116562  ...         0            None       #999999
+10      pareto  191.535206   0.110399  ...         0            None       #999999
+
+
+# Plot resultados
+dist.plot()
+plt.show()
+
+#Figure_2.2_pdf_teste_obs.png
+
+def qqplot(x, y, quantiles=None, interpolation='nearest', ax=None, rug=False,
+           rug_length=0.05, rug_kwargs=None, **kwargs):
+    """Draw a quantile-quantile plot for `x` versus `y`.
+   
+	Implementation : Artem, M. (2017) https://stats.stackexchange.com/questions/403652/two-sample-quantile-quantile-plot-in-python
+	
+	Buja, A., Cook, D. Hofmann, H., Lawrence, M. Lee, E.-K., Swayne, D.F and Wickham, H. (2009) 
+	Statistical Inference for exploratory data analysis and model diagnostics Phil. Trans. R. Soc. A 2009 367, 
+	4361-4383 doi: 20.02098/rsta.2009.0120
+    
+	Parameters
+    ----------
+    x, y : array-like
+        One-dimensional numeric arrays.
+
+    ax : matplotlib.axes.Axes, optional
+        Axes on which to plot. If not provided, the current axes will be used.
+
+    quantiles : int or array-like, optional
+        Quantiles to include in the plot. This can be an array of quantiles, in
+        which case only the specified quantiles of `x` and `y` will be plotted.
+        If this is an int `n`, then the quantiles will be `n` evenly spaced
+        points between 0 and 1. If this is None, then `min(len(x), len(y))`
+        evenly spaced quantiles between 0 and 1 will be computed.
+
+    interpolation : {‘Linear’, ‘lower’, ‘higher’, ‘midpoint’, ‘nearest’}
+        Specify the interpolation method used to find quantiles when `quantiles`
+        is an int or None. See the documentation for numpy.quantile().
+
+    rug : bool, optional
+        If True, draw a rug plot representing both samples on the horizontal and
+        vertical axes. If False, no rug plot is drawn.
+
+    rug_length : float in [0, 1], optional
+        Specifies the length of the rug plot lines as a fraction of the total
+        vertical or horizontal length.
+
+    rug_kwargs : dict of keyword arguments
+        Keyword arguments to pass to matplotlib.axes.Axes.axvline() and
+        matplotlib.axes.Axes.axhline() when drawing rug plots.
+
+    kwargs : dict of keyword arguments
+        Keyword arguments to pass to matplotlib.axes.Axes.scatter() when drawing
+        the q-q plot.
+    """
+    # Get current axes if none are provided
+    if ax is None:
+        ax = plt.gca()
+    if quantiles is None:
+        quantiles = min(len(x), len(y))
+    # Compute quantiles of the two samples
+    if isinstance(quantiles, numbers.Integral):
+        quantiles = np.linspace(start=0, stop=1, num=int(quantiles))
+    else:
+        quantiles = np.atleast_1d(np.sort(quantiles))
+    x_quantiles = np.quantile(x, quantiles, interpolation=interpolation)
+    y_quantiles = np.quantile(y, quantiles, interpolation=interpolation)
+    # Draw the rug plots if requested
+    if rug:
+        # Default rug plot settings
+        rug_x_params = dict(ymin=0, ymax=rug_length, c='gray', alpha=0.1)
+        rug_y_params = dict(xmin=0, xmax=rug_length, c='gray', alpha=0.1)
+        # Override default setting by any user-specified settings
+        if rug_kwargs is not None:
+            rug_x_params.update(rug_kwargs)
+            rug_y_params.update(rug_kwargs)
+        # Draw the rug plots
+        for point in x:
+            ax.axvline(point, **rug_x_params)
+        for point in y:
+            ax.axhline(point, **rug_y_params)
+    # Draw the q-q plot
+    ax.scatter(x_quantiles, y_quantiles, **kwargs)
+
+
+
+
+# Draw quantile-quantile plot
+plt.figure()
+qqplot(VALE3_SA_Close_forecasted_nonLinear0[:-30].values.ravel(),VALE3_SA_Close[:-30].values.ravel(), c='r', alpha=0.1, edgecolor='k')
+plt.xlabel('QQplot amostras estimadas')
+plt.ylabel('QQplot realidade observada ')
+plt.title('QQplots para as duas amostras ')
+plt.show()
+
+#QQplots_treino.png
+
+qqplot(VALE3_SA_Close_forecasted_nonLinear0[-30:].values.ravel(), VALE3_SA_Close[-30:].values.ravel(), c='r', alpha=0.1, edgecolor='k')
+plt.xlabel('QQplot amostras estimadas de teste')
+plt.ylabel('QQplot realidade observada de teste')
+plt.title('QQplots para as duas amostras de teste')
+plt.show()	
+	
+#QQplots_teste.png
+
+######################################################################################################
+#  Os qqplots acima demonstram que os dados de teste não sao normalmente distribuidos.               #
+#  Caudas leves , bimodais e assimétricas a esquerda.Relacionamento não-Linear.Ruídos não-branco     #
+######################################################################################################
+
+#######/                               \#######
+#                                             #
+#    KPI de Risco.Binômio de risco vs retorno #
+#                                             #
+#######/                               \#######
+
+
+d=1.00
+tau=1e-2
+VALE3_SA_Close_forecasted_nonLinear0_fractional_difference  = (ts_differencing_tau(np.log(pd.DataFrame(VALE3_SA_Close_forecasted_nonLinear0.values)), d,tau )) 
+VALE3_SA_Close_forecasted_nonLinear0_fractional_difference = VALE3_SA_Close_forecasted_nonLinear0_fractional_difference.fillna(method='ffill')
+
+nans, x= nan_helper(VALE3_SA_Close_forecasted_nonLinear0_fractional_difference.values)
+VALE3_SA_Close_forecasted_nonLinear0_fractional_difference.values[nans]= np.interp(x(nans), x(~nans), VALE3_SA_Close_forecasted_nonLinear0_fractional_difference.values[~nans])
+check_nan_in_df = VALE3_SA_Close_forecasted_nonLinear0_fractional_difference.isnull().values.any()
+print (check_nan_in_df)
+#False
+
+mean_00_treino = np.mean(function_to_scale_data(VALE3_SA_Close_forecasted_nonLinear0_fractional_difference[:-30].values,-1,1).ravel())
+std_00_treino  = np.std(function_to_scale_data(VALE3_SA_Close_forecasted_nonLinear0_fractional_difference[:-30].values,-1,1).ravel())
+print('retorno_modelo00_treino: %f   ,risco_modelo00_treino: %f' % (mean_00_treino,std_00_treino))
+#retorno_modelo00_treino: -0.031662   ,risco_modelo00_treino: 0.327169
+
+mean_obs_treino = np.mean(function_to_scale_data(VALE3_SA_Close_fractional_difference_train.values,-1,1))
+std_obs_treino  = np.std(function_to_scale_data(VALE3_SA_Close_fractional_difference_train.values,-1,1))
+print('retorno_obs_treino: %f   ,risco_obs_treino: %f' % (mean_obs_treino,std_obs_treino))
+#retorno_obs_treino: 0.187192   ,risco_obs_treino: 0.105868
+
+mean_00_extrapolado = np.mean(function_to_scale_data(VALE3_SA_Close_forecasted_nonLinear0_fractional_difference[-30:].values,-1,1).ravel())
+std_00_extrapolado  = np.std(function_to_scale_data(VALE3_SA_Close_forecasted_nonLinear0_fractional_difference[-30:].values,-1,1).ravel())
+print('retorno_modelo00_extrapolado: %f   ,risco_modelo00_extrapolado: %f' % (mean_00_extrapolado,std_00_extrapolado))
+#retorno_modelo00_extrapolado: -0.103836   ,risco_modelo00_extrapolado: 0.541312
+
+mean_obs_extrapolado = np.mean(function_to_scale_data(VALE3_SA_Close_fractional_difference_test.values,-1,1))
+std_obs_extrapolado  = np.std(function_to_scale_data(VALE3_SA_Close_fractional_difference_test.values,-1,1))
+print('retorno_obs_extrapolado: %f   ,risco_obs_extrapolado: %f' % (mean_obs_extrapolado,std_obs_extrapolado))
+#retorno_obs_extrapolado: -0.210227   ,risco_obs_extrapolado: 0.383489
+
+Var_Estimado_95_treino = np.mean(VALE3_SA_Close_forecasted_nonLinear0_fractional_difference[:-30].values) - 1.960*np.std(VALE3_SA_Close_forecasted_nonLinear0_fractional_difference[:-30].values)
+Var_Observado_95_treino = np.mean(VALE3_SA_Close_fractional_difference_train.values) - 1.960*np.std(VALE3_SA_Close_fractional_difference_train.values)
+print('Var_Estimado_95_treino: %f  ,Var_Observado_95_treino:%f  ' % (Var_Estimado_95_treino, Var_Observado_95_treino))
+
+Var_Estimado_95_treino: -0.001242  ,Var_Observado_95_treino:-0.048952
+
+Var_Estimado_95_teste = np.mean(VALE3_SA_Close_forecasted_nonLinear0_fractional_difference[-30:].values) - 1.960*np.std(VALE3_SA_Close_forecasted_nonLinear0_fractional_difference[-30:].values)
+Var_Observado_95_teste = np.mean(VALE3_SA_Close_fractional_difference_test.values) - 1.960*np.std(VALE3_SA_Close_fractional_difference_test.values)
+
+print('Var_Estimado_95_teste: %f  ,Var_Observado_95_teste:%f  ' % (Var_Estimado_95_teste, Var_Observado_95_teste))
+#Var_Estimado_95_teste: -0.001197  ,Var_Observado_95_teste:-0.021666
+
+
+###########################/* Considerações Finais *\ ########################################
+#      Confirmando aquilo que encomtramos no repositório anterior 
+#      na parte de analíse exploratória dos dados de que o sinal da série histórica da VALE3.SA pode ser um ruído branco, 
+#      imprevisível justamente porque sua natureza é aleatóriedade pura, caos.Hipotese Fraca de Mercado.
+#      Concorrência Perfeitamente Elastíca, pelo menos para os modelos  aqui apresentados.
+#      Concerteza existem sim modelos mais recentes que os clássicos apresentados aqui, Merton Jumps(1979) e afins, tais como
+#      Autoencoders Transformers, Bert e variantes , bem como o prório Chat GPT ,em suas versões mais recentes, para serem aboradados em pesquisas futuras.
+#      Entretanto , a abodagem mais precisa é a passiva Long 'n Hold das principais Blue Chips infraestruturais do país ,
+#      tais como Bancos, Energia ,Saneamento/Seguradoras ,Telecon ( metódo BEST do Luis Carlos Barsi)
+###########################/ *                    *\ ########################################  
