@@ -829,7 +829,7 @@ print('Var_Estimado_95_teste: %f  ,Var_Observado_95_teste:%f  ' % (Var_Estimado_
 #      imprevisível justamente porque sua natureza é aleatóriedade pura, caos.Hipotese Fraca de Mercado.
 #      Concorrência Perfeitamente Elastíca, pelo menos para os modelos  aqui apresentados.
 #      Concerteza existem sim modelos mais recentes que os clássicos apresentados aqui, Merton Jumps(1979) e afins, tais como
-#      Autoencoders Transformers, Bert e variantes , bem como o prório Chat GPT ,em suas versões mais recentes, para serem aboradados em pesquisas futuras.
-#      Entretanto , a abodagem mais precisa é a passiva Long 'n Hold das principais Blue Chips infraestruturais do país ,
+#      Autoencoders Transformers, Bert e variantes , bem como o prório Chat GPT ,em suas versões mais recentes, para serem abordados em pesquisas futuras.
+#      Entretanto , a abordagem mais precisa é a passiva Long 'n Hold das principais Blue Chips infraestruturais do país ,
 #      tais como Bancos, Energia ,Saneamento/Seguradoras ,Telecon ( metódo BEST do Luis Carlos Barsi)
 ###########################/ *                    *\ ########################################  
